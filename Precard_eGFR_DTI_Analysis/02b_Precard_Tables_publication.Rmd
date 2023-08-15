@@ -1,0 +1,298 @@
+---
+title: "Precard Type 1 Tables for Publication"
+author: "Tasos Mangelis"
+date: "15.06.2022"
+output: word_document
+---
+
+```{r setup, echo=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+
+library("dplyr")
+library("survival")
+library("knitr")
+library('survivalAnalysis')
+library("riskRegression")
+library("rms")
+library("survminer")
+library("gtsummary")
+library("pander")
+
+```
+
+\newpage
+## Table 1 contains the basic patient characteristics following cleaning of the data and imputation as described in the methods section. 
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, results='asis'}
+
+# use the gtsummary() function in the dplyr pipeline for nice tables
+Precard_eGFRdrop_datasets$eGFR_drop50%>%
+  select(Age, Diabetes_Dur, eGFR_bsl, SYSTOLIC, DIASTOLIC, Hba1c, ACR,
+         Cholesterol, BMI, Weight, Ethnicity_groups, Afrocaribbean_Ethnicity, Gender)%>%
+  tbl_summary(missing = "no", # Don;t include missing values
+              # Choose desirable statistics to present
+              statistic = list(all_continuous() ~ "{mean} ({sd}), {median} ({p25}, {p75})",
+                     all_categorical() ~ "{n} ({p}%)"),
+              # Change labels for best appearance
+              label = list(Age ~	"Age (years)",
+                           Diabetes_Dur~	"Duration of diabetes",
+                           eGFR_bsl~	"eGFR baseline",
+                           SYSTOLIC ~	"Systolic blood pressure",
+                           DIASTOLIC~	"Diastolic blood pressure",
+                           Hba1c	~	"HbA1c",
+                           ACR ~	"ACR",
+                           Cholesterol~	"Cholesterol",
+                           BMI ~ "BMI", 
+                           Afrocaribbean_Ethnicity~	"African Caribbean"	))%>%
+  add_n() # add numbers to table
+
+
+```
+
+\newpage
+## Table 2: Table with baseline patient caracteristics stratified by African-Caribbean Ethnicity
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, results='asis'}
+
+# Create table same as above
+Precard_eGFRdrop_datasets$eGFR_drop50%>%
+  select(Age, Diabetes_Dur, eGFR_bsl, SYSTOLIC, DIASTOLIC, Hba1c, ACR,
+         Cholesterol, BMI, Weight, Ethnicity_groups, Afrocaribbean_Ethnicity, Gender)%>%
+  # Additionally, use Ethnicity to divide data to two groups and apply all below to both
+  tbl_summary(missing = "no", by = Afrocaribbean_Ethnicity, 
+              statistic = list(all_continuous() ~ "{mean} ({sd}), {median} ({p25}, {p75})",
+                     all_categorical() ~ "{n} ({p}%)"),
+              label = list(Age ~	"Age (years)",
+                           Diabetes_Dur~	"Duration of diabetes",
+                           eGFR_bsl~	"eGFR baseline",
+                           SYSTOLIC ~	"Systolic blood pressure",
+                           DIASTOLIC~	"Diastolic blood pressure",
+                           Hba1c	~	"HbA1c",
+                           ACR ~	"ACR",
+                           Cholesterol~	"Cholesterol",
+                           BMI ~ "BMI", 
+                           Afrocaribbean_Ethnicity~	"African Caribbean"	))%>%
+  add_n()%>%
+  add_p() # add statistical tests (Displayed at the footnote area of the table)
+
+```
+
+\newpage
+## Table 2: Table with baseline patient caracteristics stratified by eGFR 50 percent drop
+
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, results='asis'}
+
+# Create gtsummary table as before
+Precard_eGFRdrop_datasets$eGFR_drop50%>%
+  select(Age, Diabetes_Dur, eGFR_bsl, SYSTOLIC, DIASTOLIC, Hba1c, ACR,
+         Cholesterol, BMI, Weight, Ethnicity_groups, Afrocaribbean_Ethnicity, Gender, EventCox)%>%
+  mutate(EventCox=factor(EventCox, levels = c(1, 2), 
+                         labels=c("progression", "cencored")))%>%
+  tbl_summary(missing = "no", by = EventCox,
+              statistic = list(all_continuous() ~ "{mean} ({sd}), {median} ({p25}, {p75})",
+                     all_categorical() ~ "{n} ({p}%)"),
+              label = list(Age ~	"Age (years)",
+                           Diabetes_Dur~	"Duration of diabetes",
+                           eGFR_bsl~	"eGFR baseline",
+                           SYSTOLIC ~	"Systolic blood pressure",
+                           DIASTOLIC~	"Diastolic blood pressure",
+                           Hba1c	~	"HbA1c",
+                           ACR ~	"ACR",
+                           Cholesterol~	"Cholesterol",
+                           BMI ~ "BMI", 
+                           Afrocaribbean_Ethnicity~	"African Caribbean"	))%>%
+  add_n()%>%
+  add_p()
+
+```
+
+\newpage
+## 50% drops Regression models
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, comment="", results='asis'}
+
+# Use finalfit package for checking, but also because it creates better table outputs
+# that allow all models to be presented at one table
+
+explanatory = c("Age_groups", "Afrocaribbean_Ethnicity", "SYSTOLIC", "Hba1c","ACR_G") # Define variables
+dependent_dss = "Surv(T2E,EventCox)" # Define events for Univariable and multivariable models
+dependent_crr = "Surv(T2E,Event)" # Define survival objects for Compreting risks (Pre-event death)
+
+Precard_eGFRdrop_datasets$eGFR_drop50%>%
+  # Create summary table to include all results
+  summary_factorlist(dependent_dss, explanatory, column = TRUE, fit_id = TRUE) %>%
+    # CPH univariable models
+  ff_merge(Precard_eGFRdrop_datasets$eGFR_drop50 %>% coxphuni(dependent_dss, explanatory) %>%
+     fit2df(estimate_suffix = " (CPH univariable)")) %>%
+    # CPH multivariable model
+  ff_merge(Precard_eGFRdrop_datasets$eGFR_drop50 %>% coxphmulti(dependent_dss, explanatory) %>%
+      fit2df(estimate_suffix = " (CPH multivariable)")) %>%
+    # Fine - Gray competing risks regression
+  ff_merge(Precard_eGFRdrop_datasets$eGFR_drop50 %>% crrmulti(dependent_crr, explanatory) %>%
+    fit2df(estimate_suffix = " (Competing risks model)")) %>%
+  select(-fit_id, -index) %>% 
+  dependent_label(Precard_eGFRdrop_datasets$eGFR_drop50, "Survival") %>% 
+  kable()
+
+```
+
+\newpage
+## Forest plot for 50% drop model
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, comment="", results='asis'}
+# Create a forest plot including the Hazard ratios and CIS for all variables includeed in the model
+
+tiff("Figure2_DiabetesCare.tiff", res = 700, width = 6000, height = 4000, units = "px") # save as high quality for journal
+Precard_eGFRdrop_datasets$eGFR_drop50%>%
+  mutate(SYSTOLIC = ff_label(SYSTOLIC, "Systolic blood pressure"))%>%
+  mutate(Age = ff_label(Age_groups, "Age groups (years)"))%>%
+  mutate(ACR =ff_label(ACR_G, "ACR grade"))%>%
+  mutate(Afrocaribbean_Ethnicity = factor(Afrocaribbean_Ethnicity, 
+                              levels=c("1. Non African-Caribbean", "2. African-Caribbean"), 
+                              labels=c("Non African-Caribbean", "African-Caribbean")))%>%
+  hr_plot(dependent_dss, explanatory, remove_ref = T,
+          dependent_label = NULL, suffix = NULL, prefix = NULL, 
+          table_text_size=3.5, title_text_size=12, 
+          plot_opts=list(xlab("HR, 95% CI"), theme(axis.title = element_text(size=12))))
+dev.off()
+
+```
+
+\newpage
+## Cumulative incidence curve for Afro-caribbean ethnicity
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, comment="", results='markup'}
+
+# Create a surv.fit object for ethnicity
+fit.test<-survfit(Surv(T2E, EventCox) ~ Afrocaribbean_Ethnicity, data = Precard_eGFRdrop_datasets$eGFR_drop50)
+
+# Create a plot object using ggsurvplot()
+ggsurv_fig1<-ggsurvplot(fit.test,
+          # plot specifics
+          conf.int = F,
+          linetype = "solid",
+          ggtheme = theme_classic(),
+          palette = c("#999999", "#E69F00"),
+          # Legend specifics
+          legend.labs=c("Non African-Caribbean", "African-Caribbean"),
+          legend.title = "Ethnicity",
+          legend.fontsize=12,
+          fun = "cumhaz",
+          # axis and labels specifics
+          xlim=c(0, 13.9), ylim=c(0, 0.5), 
+          font.x = c(14),
+          pval = F,
+          font.y = c(14),
+          font.tickslab = c(14, "plain"), 
+          xlab="Follow up (years)",
+          ylab="Cumulative Hazard",
+          risk.table = T,
+          tables.theme = theme_cleantable(),
+          tables.y.text = FALSE,
+          break.time.by = 2, 
+          censor.shape="")
+
+# Further define label for being statistically significant and place between the figures
+ggsurv_fig1$plot <- ggsurv_fig1$plot +
+     annotate("text", x = 14.5, y = 0.24, label = "p<0.001", cex=3, col="black", vjust=0, hjust = 1.1, fontface=1.5)
+
+# Save figure in good quality .tiff for publisher requirements
+tiff("Figure1_DiabetesCare.tiff", res = 700, width = 5500, height = 4000, units = "px")
+ggsurv_fig1
+dev.off()
+```
+
+
+\newpage
+## Cumulative incidence curve for Afro-caribbean ethnicity - 40%
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, comment="", results='markup'}
+# produce similar plots for the other 2 models of 30 and 40% decrease
+fit.test<-survfit(Surv(T2E, EventCox) ~ Afrocaribbean_Ethnicity, data = Precard_eGFRdrop_datasets$eGFR_drop40)
+ggsurv40<-ggsurvplot(fit.test, 
+          conf.int = F,
+          linetype = "solid",
+          ggtheme = theme_classic(),
+          palette = c("#999999", "#E69F00"),
+          legend.labs=c("Non African-Caribbean", "African-Caribbean"),
+          fun = "cumhaz",
+          xlim=c(0, 13.9), ylim=c(0, 0.5), 
+          font.x = c(14),
+          pval = T,
+          font.y = c(14),
+          font.tickslab = c(12, "plain"), 
+          xlab="Follow Up (years)",
+          ylab="Cumulative Hazard", 
+          risk.table = T, 
+          break.time.by = 2, 
+          censor.shape="")
+
+ggsurv40
+```
+
+\newpage
+## Cumulative incidence curve for Afro-caribbean ethnicity - 30%
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, comment="", results='markup'}
+
+fit.test<-survfit(Surv(T2E, EventCox) ~ Afrocaribbean_Ethnicity, data = Precard_eGFRdrop_datasets$eGFR_drop30)
+ggsurv30<-ggsurvplot(fit.test,
+          conf.int = F,
+          linetype = "solid",
+          ggtheme = theme_classic(),
+          palette = c("#999999", "#E69F00"),
+          legend.labs=c("Non African-Caribbean", "African-Caribbean"),
+          fun = "cumhaz",
+          xlim=c(0, 13.9), ylim=c(0, 0.5), 
+          font.x = c(14),
+          pval = T,
+          font.y = c(14),
+          font.tickslab = c(12, "plain"), 
+          xlab="Follow Up (years)",
+          ylab="Cumulative Hazard", 
+          risk.table = T, 
+          break.time.by = 2, 
+          censor.shape="")
+
+ggsurv30
+```
+
+\newpage
+## Additional info for paper
+
+\newpage
+### events per patient years for primary outcome (50% decrease)
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, results='asis'}
+
+Precard_eGFRdrop_datasets$eGFR_drop50%>%
+  select(Event, T2E)%>%
+  summarise(Count = sum(T2E)/1000, 
+            Sum=sum(Event=="1"), 
+            events.per.year=Sum/Count)%>%
+  kable()
+  
+        
+```
+
+### events per patient years per ethnicity for primary
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, results='asis'}
+
+Precard_eGFRdrop_datasets$eGFR_drop50%>%
+  select(Event, T2E, Afrocaribbean_Ethnicity)%>%
+  group_by(Afrocaribbean_Ethnicity) %>%  
+  mutate(Count = sum(T2E)/1000, 
+         Sum_50 = sum(Event=="1"), 
+         events.per.year= round((Sum_50/Count),2))%>%
+  select(events.per.year, Afrocaribbean_Ethnicity)%>%
+  tbl_summary(by = Afrocaribbean_Ethnicity)%>%
+  add_p()
+
+```
+
+
+
+
+# End of code ----

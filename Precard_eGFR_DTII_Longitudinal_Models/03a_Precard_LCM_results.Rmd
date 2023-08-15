@@ -1,0 +1,197 @@
+---
+title: "Prec_Draft_Results"
+author: "Tasos Mangelis" 
+date: "`r Sys.Date()`" 
+output:
+  powerpoint_presentation:
+    reference_doc: my-styles.pptx
+---
+
+```{r setup, include = FALSE}
+
+# Libraries 
+knitr::opts_chunk$set(collapse = TRUE,comment = "#>")
+
+library("pander")
+library("knitr")
+library("summarytools")
+library("gtsummary")
+library("ggplot2")
+library("lcmm")
+library("dplyr")
+library("ggalluvial")
+
+```
+
+LCMM application - Follow up time as time variable
+
+# Analysis diagram
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, results='asis', fig.height=6, fig.width=8}
+
+# Create a visualisation for the project flow and add numbers of patients in the various steps
+DiagrammeR::grViz("digraph {
+  graph [layout = dot, rankdir = TB]
+  
+  node [shape = rectangle]    
+  rec0 [label = 'Total T2 patients: 4045']
+  rec1 [label = 'Cohort following data cleaning: 3281 patients']
+  rec2 [label = 'Model Tests: Time variables with covariates']
+  rec3 [label = 'Follow up']
+  rec7 [label = 'Model Test: Fixed, random effects, mixture finction:
+  Quadratic, Cubic']
+  rec9 [label = 'Model comparisons:
+  GoF- BIC/AIC, Plots, Post Prob']
+
+  # edge definitions with the node IDs
+  rec0 -> rec1
+  rec1 -> rec2 -> rec3
+  rec3 -> rec7
+  rec7 -> rec9
+
+  
+  }")
+
+```
+
+# Classes estimation models
+
+## 1. Model comparison
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, results='asis', fig.height=6, fig.width=8}
+
+# Compare models that are produced in LCMM_precard file by BIC/AIC measures in a table
+modelout
+```
+
+## Further characteristics
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, results='asis', fig.height=6, fig.width=8}
+# Create a table including all model characteristics to further compare model structures 
+pander(summarytable(model_b, model_c2, model_c3, model_c4, 
+                    which = c("conv", "npm", "loglik", "AIC", "BIC", "entropy", "ICL", "%class"), display = F))
+
+```
+
+
+## Cubic model - 3 classes
+
+### Class specific metrics
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, results="markup", fig.height=6, fig.width=8}
+
+testsummaryCt3<-LCTMtools::LCTMtoolkit(model_c3)
+
+```
+
+### Postrior probability
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, results='asis', fig.height=6, fig.width=8}
+
+pander(testsummaryCt3[[1]])
+```
+
+### Plot including prediction lines for each class and data points of the same class 
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, results='asis', fig.height=10, fig.width=12}
+# Use predictY function to predict new points based on the randomly generated dataset 
+pred_plot_Ct3<-predictY(model_c3, # model
+                        newdata = datnew_t, # Randomly generated dataset
+                        var.time = "timeDiff", # Define the independent variable
+                        draws = F) # Define whether confidence intervals are necessary
+
+# Define plot structure
+par(mfrow=c(2,2))
+
+# Isolate data for class no 1
+y<-prec_long_T2%>%filter(classes_3==1)
+# Create plot based on the prediction of the model run above and them define 
+# plot specifics, axis, legend, title and limits
+plot(pred_plot_Ct3, xlab="Follow-up time (years)", 
+     ylab="eGFR (yearly average)", legend=NULL, 
+     main = "class 1", ylim=c(0, 150))
+# Add points of the first class to the plot
+points(y$timeDiff, y = y$mEGFR, pch = 16, cex=0.5 , col = "black")
+
+y<-prec_long_T2%>%filter(classes_3==2)
+plot(pred_plot_Ct3, xlab="Follow-up time (years)", 
+     ylab="", 
+     main = "class 2", ylim=c(0, 150))
+points(y$timeDiff, y = y$mEGFR, pch = 16, cex=0.5 , col = "red")
+
+y<-prec_long_T2%>%filter(classes_3==3)
+plot(pred_plot_Ct3, xlab="Follow-up time (years)", 
+     ylab="eGFR (yearly average)", legend=NULL, 
+     main = "class 3", ylim=c(0, 150))
+points(y$timeDiff, y = y$mEGFR, pch = 16, cex=0.5 , col = "forest green")
+
+mtext("Spline model and class data plot", side = 3, line = -1.5, outer = TRUE, cex = 1.5)
+
+```
+
+### Shankey plot
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, results='markup'}
+
+# Create shankey plots to investigate how the various data points move about in 
+# different classes between the different models 
+
+# Define number of different models to compare
+nb_model=3
+# Provide data based on the number of patients and models to compare
+data_sk <- data.frame(id = rep(prec_long_T2$R50_ID,nb_model),
+                      ngmodel = rep(1:nb_model,each=length(prec_long_T2$R50_ID)),
+                      class = NA)
+# Assign classes based on the model predictions
+data_sk$class <- c(prec_long_T2$class_2, prec_long_T2$class_3, prec_long_T2$class_4)
+data_sk$class <- as.factor(data_sk$class)
+# Add labels
+modelsLabels<-c("classes_2", "classes_3", "classes_4")
+# Create plot
+ggplot(data_sk,
+       aes(x = ngmodel, stratum = class, alluvium = id, y = 1,
+           fill = class, label = class)) +
+  # Provide links between the models (based on the number of instances that changed)
+  geom_flow(show.legend=TRUE) +
+  geom_stratum(show.legend=TRUE) +
+  geom_text(stat = "stratum", size = 3) +
+  theme_alluvial() +
+  labs(y = "number of patients", x = "k-class model") + 
+  scale_x_discrete()+
+  scale_fill_brewer()
+
+```
+
+### Descriptive table -  model
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, results='markup'}
+
+# Table providing differences in baseline characteristics of the cohort by dividing 
+# dataset between the assigned classes (here for the 3 class model)
+
+prec_long_T2%>%
+  filter(timeDiff==0)%>%
+  select(mEGFR, Age, Diabetes_Dur, Ethnicity_groups, Gender, BMI,ACR,
+         Hba1c, SYSTOLIC, DIASTOLIC, HDL, Triglycerids, Cholesterol, BMI)%>%
+  tbl_summary(by = "classes_3", # stratification 
+              # Define appropriate numbers
+              statistic = list(all_continuous() ~ "{mean} ({sd}), {median} ({p25}, {p75})",
+                              all_categorical() ~ "{n} ({p}%)"), 
+              # Define digits for continuous, and digits of the % for categorical
+              digits = list(all_categorical() ~ c(0, 1), 
+                            all_continuous() ~ c(0,1)),
+              # Modify labels
+              label = list(mEGFR	~	"eGFR (year average)"	, 
+                           Diabetes_Dur	~	"Diabetes duration"	,
+                           Ethnicity_groups	~	"Ethnicity", 
+                           Gender	~	"Gender"))%>%
+  # Add p-values
+  add_p()%>%
+  # Add total numbers and characteristics as well
+  add_overall()
+
+```
+
+
+
+# End of code ----

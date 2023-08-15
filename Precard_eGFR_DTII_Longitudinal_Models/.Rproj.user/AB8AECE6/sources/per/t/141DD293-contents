@@ -1,0 +1,505 @@
+# LongRisk development script ----
+# Creator: Tasos Mangelis
+# Last update: 04.08.2022
+
+# Libraries ----
+
+Loadlibraries()
+
+Loadlibraries <- function() {
+  library(tidyverse)
+  library(readxl)
+  library(ggplot2)
+  library(lubridate)
+  library(LCTMtools)
+  library(lcmm)
+}
+
+# Data Loading ----
+
+# load data from the excel file in the project dir
+
+read_excel_allsheets <- function(filename, tibble = FALSE) {
+  # straight data.frames - tibble = F 
+  sheets <- readxl::excel_sheets(filename)
+  x <- lapply(sheets, function(X) readxl::read_excel(filename, sheet = X))
+  if(!tibble) x <- lapply(x, as.data.frame)
+  names(x) <- sheets
+  #x<- lapply(sheets, function(Y) names(Y)[names(Y) == 'TEST_DATE'] <- paste0("test_date_", sheets))
+  x
+}
+raw_data <- read_excel_allsheets("Precardc_Full.xlsx")
+
+# make changes in all the raw datasets ie. Values after 2004 and remove columns
+
+date_change<-function(df) {
+  df<-df[df$YEAR_TEST>=2004, ]
+  df = subset(df, select = -c(YEAR_TEST))
+  #names(df)[names(df) == 'TEST_DATE'] <- paste0("test_date_",)
+  return(df)
+}
+lapply(raw_data, FUN = date_change)
+
+# Dataset with eGFR values, including patients with >45 eGFR baseline and after test date 2004 and demographics
+
+eGFR45<- read_csv("eGFR_45.csv")
+eGFR45<-eGFR45[, -c(1, 16,18)]%>%
+  rename("test_date.bsl"="TEST_DATE_Bsl", 
+         "test_year.bsl"="YEAR_TEST_bsl",
+         "test_date"="TEST_DATE", 
+         "test_year"="YEAR_TEST")%>%
+  group_by(R50_ID)%>%
+  mutate(test_date.bsl=min(test_date, na.rm = T), 
+         test_year=min(test_year, na.rm = T))%>%
+  arrange(test_date)%>%
+  ungroup()
+
+eGFR45<-eGFR45%>%select(R50_ID, test_date, eGFR)
+
+#Baseline eGFR dataset
+
+bs_eGFR<-eGFR45[order(eGFR45$R50_ID, eGFR45$test_date, decreasing = FALSE),]
+bs_eGFR<-bs_eGFR[!duplicated(bs_eGFR$R50_ID),]
+
+# Baseline datasets
+
+baseline_eGFR2_multi<-rbind(baseline_eGFR2_1_1000,baseline_eGFR2_1001_2000, baseline_eGFR2_2001_4000, 
+                            baseline_eGFR2_4001_6000, baseline_eGFR2_6001_8000, baseline_eGFR2_8001_10000, 
+                            baseline_eGFR2_10_12, baseline_eGFR2_12_14, baseline_eGFR2_14_16, baseline_eGFR2_16_18, 
+                            baseline_eGFR2_18_20, baseline_eGFR2_20_end)
+#write.csv(baseline_eGFR2_multi, "Precard_baseline_extraction092022.csv")
+
+# Baseline data changes according to clinicians suggestions --------------------
+
+baseline_eGFR2_multi<-baseline_eGFR2_multi%>%
+  mutate(test_date=as.Date(test_date))%>%
+  mutate_at(c('X0', 'Triglycerids', 'LDL', 'HDL', 'Hba1c', 'Cholesterol', 'DIASTOLIC', 'SYSTOLIC', 'BMI', 'ACR'), as.numeric)%>%
+  mutate_at(c('test_date_acr', 'test_date_BMI', 'test_date_BP', 'test_date_chol', 
+              'test_date_HbA1c', 'test_date_HDL', 'test_date_LDL', 'test_date_ret', 'test_date_trig'), as.Date)%>%
+  inner_join(eGFR45[, c("R50_ID", "test_date", "eGFR", "Gender", "Ethnicity_groups", "DM_TYPE_ID")], by = c("R50_ID", "test_date"))%>%
+  inner_join(raw_demogs[, c("R50_ID", "DIAGNOSIS_YEAR", "YOBirth")], by = "R50_ID")%>%
+  mutate(R=ifelse(R=="U", NA, R),
+         M=ifelse(M=="U", NA, M),
+         RM=ifelse(RM=="U", NA, RM), 
+         RM=ifelse(RM=="R1"|RM=="R3", NA, RM), 
+         RM=as.factor(RM), 
+         ACR=ifelse(ACR>200, 200, ACR), 
+         Cholesterol=ifelse(Cholesterol>10, NA, Cholesterol), 
+         eGFR=ifelse(eGFR>160, 160, eGFR), 
+         Triglycerids=ifelse(Triglycerids>10, NA, Triglycerids), 
+         LDL=ifelse(LDL>8, NA, LDL),
+         Diabetes_Dur=as.numeric(year(test_date)-DIAGNOSIS_YEAR), 
+         DM_TYPE_ID=as.factor(DM_TYPE_ID),
+         Ethnicity_groups=as.factor(Ethnicity_groups), 
+         Gender=as.factor(Gender), 
+         Age=as.numeric(year(test_date)-YOBirth), 
+         X0=as.factor(X0))%>%
+  select(R50_ID, X0, test_date, Age, Diabetes_Dur, DIAGNOSIS_YEAR,YOBirth, DM_TYPE_ID, 
+         Ethnicity_groups, Gender, eGFR, Triglycerids, ACR, Hba1c, SYSTOLIC, 
+         DIASTOLIC, BMI, RM, R, M, LDL, HDL, Cholesterol)
+
+precard_total<-baseline_eGFR2_multi%>%filter(X0==8|X0==9|X0==10)
+
+precard_T1<-precard_total%>%filter(DM_TYPE_ID=="DT_I")
+precard_T2<-precard_total%>%filter(DM_TYPE_ID=="DT_II")
+
+# Imputation of dataset X0 - 8/9/10 and remove RM -------------------------
+
+library(mice)
+# Dataset preparation 
+precard_T2<-precard_T2%>%select(-c(R, M, RM))
+
+whr <- data.frame(R50_ID= rep(FALSE,9264), X0= rep(FALSE,9264), test_date= rep(FALSE,9264),
+                  Age= rep(FALSE,9264),Diabetes_Dur= rep(FALSE,9264),DIAGNOSIS_YEAR= rep(FALSE,9264),
+                  YOBirth= rep(FALSE,9264), DM_TYPE_ID= rep(FALSE,9264), Ethnicity_groups= rep(FALSE,9264),
+                  eGFR= rep(FALSE,9264), Gender= rep(FALSE,9264), Triglycerids=is.na(precard_T2$Triglycerids),
+                  ACR=is.na(precard_T2$ACR), Hba1c=is.na(precard_T2$Hba1c), SYSTOLIC=is.na(precard_T2$SYSTOLIC),
+                  DIASTOLIC=is.na(precard_T2$DIASTOLIC), BMI=is.na(precard_T2$BMI), LDL=is.na(precard_T2$LDL),             
+                  HDL= is.na(precard_T2$HDL), Cholesterol=is.na(precard_T2$Cholesterol))
+#impute
+precard_T2_i<-mice(precard_T2, m=5, maxit = 15, method = 'pmm', seed = 500, 
+                 predictorMatrix = quickpred(precard_T2,
+                                             include = c("eGFR","Ethnicity_groups", "Gender","Age"), 
+                                             exclude = c("R50_ID", "DM_TYPE_ID", "X0", "test_date", "Diabetes_Dur", "DIAGNOSIS_YEAR", "YOBirth")), 
+                 where = whr)
+
+summary(precard_T2_i)
+precard_T2_i<-mice::complete(precard_T2_i, 5)
+
+precard_T2_i<-precard_T2_i%>%
+  rename("Baseline_eGFR"="eGFR", 
+         "Baseline_date"="test_date")
+
+precard_T2_i<-precard_T2_i%>%
+  rename("Age_baseline"="Age", 
+         "Diab_Dur_baseline"="Diabetes_Dur")
+precard_T2_i<-precard_T2_i%>%
+  rename("Triglycerids_bsl"= "Triglycerids", "ACR_bsl"="ACR", "Hba1c_bsl"="Hba1c", 
+         "SYSTOLIC_bsl"="SYSTOLIC", "DIASTOLIC_bsl"="DIASTOLIC", "BMI_bsl"="BMI", 
+         "LDL_bsl"="LDL", "HDL_bsl"="HDL", "Cholesterol_bsl"="Cholesterol")      
+# Dataset including the Events and time to events for survival models ----
+
+# # Extraction of 50% or more eGFR decline
+# precard_Event<-eGFR45%>%
+#   group_by(R50_ID)%>%
+#   mutate(t.min=min(test_date, na.rm = T),
+#          timeDiff=difftime(test_date, t.min, units = "days")/365, 
+#          eGFR.bsl=max(eGFR[test_date==t.min]), 
+#          eGFR.perDiff=round((eGFR-eGFR.bsl)*100/eGFR.bsl, 1), 
+#          timeDiff=round(as.numeric(timeDiff), 1), 
+#          Drop=ifelse(eGFR.perDiff<= -50 & eGFR<30, 2, 1))%>% # Drop = 2 is the 50% drop with the last eGFR <30ml/min
+#   ungroup()
+# 
+# # Identify the patients with at least 1 more than 50 % fall FOR THE FIRST TIME:
+# 
+# precard_Event <- precard_Event[order(precard_Event$R50_ID, precard_Event$Drop, precard_Event$test_date, decreasing = TRUE), ]
+# precard_Event <- precard_Event[!duplicated(precard_Event$R50_ID),]
+# 
+# # Create time to event and event indicator for T2 patients
+# precard_EventT2<-precard_Event%>%
+#   mutate(Event = ifelse(Drop==2, 1, ifelse(Drop==1 & !is.na(YODeath), 2, 0)), 
+#          T2E = ifelse(Drop==1 & !is.na(YODeath), YODeath - test_year, 
+#                             difftime(test_date, test_date.bsl, units = "days")/365), 
+#          T2E = round(as.numeric(T2E), 2))%>%
+#   inner_join(precard_T2_i%>%select(R50_ID, Triglycerids, LDL, HDL, SYSTOLIC, DIASTOLIC, Cholesterol, BMI, ACR, Hba1c), by = 'R50_ID')
+# 
+# # Create time to event and event indicator for T1 patients
+# precard_EventT1<-precard_Event%>%
+#   mutate(Event = ifelse(Drop==2, 1, ifelse(Drop==1 & !is.na(YODeath), 2, 0)), 
+#          T2E = ifelse(Drop==1 & !is.na(YODeath), YODeath - test_year, 
+#                       difftime(test_date, test_date.bsl, units = "days")/365), 
+#          T2E = round(as.numeric(T2E), 2))%>%
+#   inner_join(precard_T1%>%
+#                select(R50_ID, Triglycerids, LDL, HDL, SYSTOLIC, DIASTOLIC, Cholesterol, BMI, ACR, R, M, RM, Hba1c), by = 'R50_ID')
+
+# Datasets for longitudinal analysis ----
+
+prec_l_T2<-eGFR45%>%
+  inner_join(precard_T2_i, by = 'R50_ID')
+
+prec_l_T2$timeDiff<-round(as.numeric(difftime(prec_l_T2$test_date, prec_l_T2$Baseline_date, units = "days")/365), 3)
+prec_l_T2<-prec_l_T2[prec_l_T2$timeDiff>=0,]
+prec_l_T2$Diabetes_Dur<-as.numeric(year(prec_l_T2$test_date)-prec_l_T2$DIAGNOSIS_YEAR)
+prec_l_T2$Ethn_AC<-ifelse(prec_l_T2$Ethnicity_groups=="BLACK", "AfroCarribean", "Other")
+prec_l_T2$Age<-as.numeric(year(prec_l_T2$test_date)-prec_l_T2$YOBirth)
+
+# Dataset for longitudinal analysis but with standardised yearly measurements
+
+prec_lT2_g<-prec_l_T2%>%
+  mutate(timeDiff=round(as.numeric(timeDiff)))%>%
+  group_by(across(c(R50_ID,timeDiff)))%>%
+  mutate(egfr_year= mean(eGFR, na.rm = TRUE))%>%
+  distinct(R50_ID, timeDiff, .keep_all = TRUE)%>%
+  ungroup(timeDiff)%>%
+  mutate(n=max(timeDiff, na.rm = T),
+         timeDiff=as.factor(timeDiff))%>%
+  filter(n>2)
+
+T2_indicator45<-prec_lT2_g%>%filter(timeDiff==0)%>%filter(egfr_year>=60)
+T2_indicator45<-unique(T2_indicator45$R50_ID)
+T2_indicator45<-as.data.frame(T2_indicator45)
+colnames(T2_indicator45)<-c("R50_ID")
+
+prec_lT2_g<-merge(prec_lT2_g, T2_indicator45, by = "R50_ID", all=F)
+
+# convert ID to numeric, LCTMtools demands
+prec_lT2_g$R50_ID<-str_sub(prec_lT2_g$R50_ID, 2, -1)
+prec_lT2_g$R50_ID<-as.numeric(prec_lT2_g$R50_ID)
+prec_lT2_g<-prec_lT2_g%>%filter(Age>=18)
+# Further data tranformations - age centering and  ethnicity labels
+prec_lT2_g$Age_c<-(prec_lT2_g$Age-min(prec_lT2_g$Age))/10
+prec_lT2_g$egfr_year_ln<-log(prec_lT2_g$egfr_year)
+prec_lT2_g$timeDiff<-as.numeric(as.character(prec_lT2_g$timeDiff))
+
+#### Check number of F_U years per patients and keep only 10 years of FU
+
+# test<-prec_lT2_g%>%distinct(R50_ID, .keep_all = T)
+# table(test$n)
+
+# 3   4   5   6   7   8   9   10  11  12  13   14 
+# 439 421 446 384 393 413 379 406 333 297 121  13 
+prec_lT2_g<-prec_lT2_g%>%filter(n<11)
+
+# n = 3281 patients
+
+
+
+# Remove patients that eGFR increases rapidly
+
+# R50_id<-unique(precard_longT2_group$R50_ID)
+# Prec_T2_outliers<-data.frame()
+# for (i in 1:length(R50_id)) {
+#   print(i)
+#   df<-precard_longT2_group[precard_longT2_group$R50_ID==R50_id[i], c("R50_ID", "egfr_year", "timeDiff", "Age_c", "Age")]
+#   df<-df%>%arrange(timeDiff)
+#   df$eGFR_diff<-c(0, diff(df$egfr_year))
+#   df$eGFR_diff<-df$eGFR_diff/(df$egfr_year-df$eGFR_diff)
+#   df<-df%>%filter(eGFR_diff<0.3)%>%
+#     select(R50_ID)
+#   df<-as.data.frame(df[!duplicated(df), ])
+#   colnames(df)<-c("R50_ID") 
+# Prec_T2_outliers<-rbind(df)  
+# 
+# 
+# }
+
+# Dataset for individual plots
+precard_longT2_p<-precard_longT2_group%>%
+  select(R50_ID, timeDiff, egfr_year)%>%
+  ungroup()
+precard_longT2_p<-spread(precard_longT2_p, timeDiff, egfr_year)
+precard_longT2_pc<-precard_longT2_p%>%filter(complete.cases(.))
+
+
+# Modifications for quick testing of model function
+
+Prec_T2_10<-prec_lT2_g%>%filter(n==10)
+Prec_T2_10$Age_c<-(Prec_T2_10$Age-min(Prec_T2_10$Age))/10
+#Prec_T2_10<-Prec_T2_10[order(Prec_T2_10$R50_ID, decreasing = F), ]
+#Prec_T2_10<-head(Prec_T2_10, n = 1000)
+Prec_T2_10$timeDiff<-as.numeric(as.character(Prec_T2_10$timeDiff))
+#Prec_T2_10$Ethnicity_groups<-ifelse(is.na(Prec_T2_10$Ethnicity_groups), "OTHER", Prec_T2_10$Ethnicity_groups)
+Prec_T2_10$Gender<-as.factor(Prec_T2_10$Gender)
+
+# Type 1 - needs correction!!!
+precard_longT1_group<-precard_longT1%>%
+  mutate(timeDiff=round(as.numeric(timeDiff)))%>%
+  group_by(across(c(R50_ID,timeDiff)))%>%
+  mutate(egfr_year= mean(eGFR, na.rm = TRUE))%>%
+  distinct(R50_ID, timeDiff, .keep_all = TRUE)%>%
+  ungroup(timeDiff)%>%
+  mutate(n=max(timeDiff, na.rm = T),
+         timeDiff=as.factor(timeDiff))%>%
+  filter(n>2)
+
+precard_longT1<-eGFR45%>%
+  group_by(R50_ID)%>%
+  select(-c(test_year, test_year.bsl))%>%
+  mutate(timeDiff=difftime(test_date, test_date.bsl, units = "days")/365, 
+         timeDiff=round(as.numeric(timeDiff), 3))%>%
+  ungroup()%>%
+  inner_join(precard_T1%>%
+               select(R50_ID, Triglycerids, LDL, HDL, SYSTOLIC, DIASTOLIC, Cholesterol, BMI, ACR, R, M, RM, Hba1c), by = 'R50_ID')
+
+datnew_t<-data.frame(timeDiff=seq(0, 10, length = 1500), 
+                     Ethn_AC ="AfroCarribean",
+                     Gender="FEMALE", 
+                     ACR_bsl=10, 
+                     Diab_Dur_baseline =5,
+                     Age_baseline=25,
+                     Age=25,
+                     Age_c=4, 
+                     Triglycerids_bsl= 1.7, 
+                     Hba1c_bsl= 67, 
+                     SYSTOLIC_bsl= 135, 
+                     BMI_bsl= 33, 
+                     Cholesterol_bsl= 4.5)
+
+datnew_t$z1 <- ns(datnew_t$timeDiff,knots =nsknots[2:3],Boundary.knots = nsknots[c(1,4)])[,1]
+datnew_t$z2 <- ns(datnew_t$timeDiff,knots =nsknots[2:3],Boundary.knots = nsknots[c(1,4)])[,2]
+datnew_t$z3 <- ns(datnew_t$timeDiff,knots =nsknots[2:3],Boundary.knots = nsknots[c(1,4)])[,3]
+
+datnew_t$Gender<-as.factor(datnew_t$Gender)
+# Rmarkdown or data extractions-----
+
+rmarkdown::render("LongRisk_Kidney.Rmd")
+rmarkdown::render("Precard_LCMM.Rmd")
+rmarkdown::render("Prec_Draft_ResultsPP.Rmd")
+rmarkdown::render("Prec_lcmm_FU_finalPP.Rmd")
+save(Prec_T2_10, datnew_t, file = "Precard_Tasos_SplineExample.RData")
+
+
+# Dataset classes ------------------------------
+
+Prec_T2_10_class<-as.data.frame(C_t_3_5Quant$pprob[, 1:2])
+Prec_T2_10_class<-cbind(Prec_T2_10_class, as.data.frame(C_t_4_5Quant$pprob[ , 2]),
+                        as.data.frame(C_t_4_3equi$pprob[, 2]), as.data.frame(C_t_4_Age$pprob[,2]),
+                        as.data.frame(C_t_4_ACR$pprob[,2]))
+
+Prec_T2_10_class2<-cbind(as.data.frame(C_t_4_dd$pprob[,1:2]), as.data.frame(C_t_4_ddi$pprob[,2]),
+                         as.data.frame(C_t_4_multi$pprob[,2]), as.data.frame(splineTest3$pprob[,2]), 
+                         as.data.frame(splineTest4$pprob[,2]), as.data.frame(splineTest5$pprob[,2]))
+
+
+Prec_T2_10_class<-merge(Prec_T2_10_class, Prec_T2_10_class2, by = "R50_ID", all = F)
+
+colnames(Prec_T2_10_class)<-c("R50_ID", "3 classes", "L=5Quant", "L=3equi", "+Age", 
+                              "+ACR", "+Duration", "+Duration Int", "multivariable", "splines3", "splines4", "splines5")
+
+Prec_T2_10_class<-Prec_T2_10_class%>%
+  mutate_if(is.integer, as.factor)
+
+Prec_T2_10<-merge(Prec_T2_10, Prec_T2_10_class, by = "R50_ID", all = F)
+
+# FULL Dataset classes ------------------------------
+
+prec_lT2_g_class<-as.data.frame(Cf_t_3_5Quant$pprob[, 1:2])
+prec_lT2_g_class<-cbind(prec_lT2_g_class, as.data.frame(Cf_t_4_5Quant$pprob[ , 2]), as.data.frame(Cf_t_4_Age$pprob[,2]),
+                        as.data.frame(Cf_t_4_ACR$pprob[,2]), as.data.frame(splineTest3$pprob[,2]), 
+                        as.data.frame(splineTest4$pprob[,2]), as.data.frame(splineTest5$pprob[,2]))
+
+prec_lT2_g_class2<-cbind(as.data.frame(Cf_t_4_dd$pprob[,1:2]), as.data.frame(Cf_t_4_ddi$pprob[,2]),
+                         as.data.frame(Cf_t_4_multi$pprob[,2]))
+
+
+prec_lT2_g_class<-merge(prec_lT2_g_class, prec_lT2_g_class2, by = "R50_ID", all = F)
+
+colnames(prec_lT2_g_class)<-c("R50_ID", "3 classes", "L=5Quant", "+Age", 
+                              "+ACR", "splines3", "splines4", "splines5", 
+                              "+Duration", "+Duration Int", "multivariable")
+
+prec_lT2_g_class<-prec_lT2_g_class%>%
+  mutate_if(is.integer, as.factor)
+
+prec_lT2_g<-merge(prec_lT2_g, prec_lT2_g_class, by = "R50_ID", all = F)
+
+#### End of code ###############################################################
+################################################################################
+  
+# convert data from long to wide to check time distribution ---------------
+
+precard_long_group_wide<-spread(precard_long_group, timeDiff, eGFR)
+
+# delete 0 years time difference and replace with baseline values
+df_wide<-df_wide[, -12]
+df_wide<-rename(df_wide, "0"="eGFR_bsl")
+df_wide<-df_wide[, c(1:3, 5:11, 4, 12:25)]
+df_wide$`0`<-round(df_wide$`0`,1)
+
+df_wide_full<-df_wide%>%group_by(R50_ID)%>%summarise_all(~first(na.omit(.)))
+df_wide_full<-as.data.frame(df_wide_full)
+
+
+# convert ID to numeric, LCTMtools demands
+df$R50_ID<-str_sub(df$R50_ID, 2, -1)
+df$R50_ID<-as.numeric(df$R50_ID)
+df$time_diff<-as.numeric(df$time_diff)
+
+
+# add variable of time
+df_wide_Age<-spread(df, FU_years, Age)
+df_wide_Age<-df_wide_Age[, -11]
+df_wide_Age<-df_wide_Age%>%group_by(R50_ID)%>%summarise_all(~first(na.omit(.)))
+df_wide_Age<-as.data.frame(df_wide_Age)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
